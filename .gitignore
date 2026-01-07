@@ -1,0 +1,9 @@
+node_modules/
+*.js
+!server/index.js
+react-app/
+.DS_Store
+*.log
+.vscode/
+.idea/
+

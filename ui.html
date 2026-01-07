@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Component Data Extractor</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--figma-color-bg);
+      color: var(--figma-color-text);
+      padding: 16px;
+      font-size: 11px;
+      line-height: 16px;
+    }
+
+    :root {
+      --figma-color-bg: #ffffff;
+      --figma-color-bg-secondary: #f7f7f7;
+      --figma-color-text: #000000;
+      --figma-color-text-secondary: #666666;
+      --figma-color-border: #e5e5e5;
+      --figma-color-border-strong: #cccccc;
+      --figma-color-bg-hover: #f0f0f0;
+      --figma-color-bg-pressed: #e0e0e0;
+      --figma-color-bg-selected: #e3f2fd;
+      --figma-color-text-brand: #18a0fb;
+      --figma-color-bg-danger: #ff3b30;
+      --figma-color-text-danger: #ffffff;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      height: 100%;
+    }
+
+    .header {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--figma-color-border);
+    }
+
+    .title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--figma-color-text);
+    }
+
+    .subtitle {
+      font-size: 11px;
+      color: var(--figma-color-text-secondary);
+    }
+
+    .button-group {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .button {
+      padding: 6px 12px;
+      border: 1px solid var(--figma-color-border-strong);
+      border-radius: 6px;
+      background: var(--figma-color-bg);
+      color: var(--figma-color-text);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      font-family: inherit;
+      flex: 1;
+      min-width: 100px;
+    }
+
+    .button:hover {
+      background: var(--figma-color-bg-hover);
+      border-color: var(--figma-color-border-strong);
+    }
+
+    .button:active {
+      background: var(--figma-color-bg-pressed);
+    }
+
+    .button-primary {
+      background: var(--figma-color-text-brand);
+      color: #ffffff;
+      border-color: var(--figma-color-text-brand);
+    }
+
+    .button-primary:hover {
+      background: #1590e0;
+      border-color: #1590e0;
+    }
+
+    .button-success {
+      background: #4caf50;
+      color: #ffffff;
+      border-color: #4caf50;
+    }
+
+    .button-success:hover {
+      background: #45a049;
+    }
+
+    .button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .json-container {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+      min-height: 300px;
+    }
+
+    .json-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--figma-color-text);
+    }
+
+    .json-preview {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid var(--figma-color-border);
+      border-radius: 6px;
+      background: var(--figma-color-bg-secondary);
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      font-size: 10px;
+      line-height: 1.5;
+      color: var(--figma-color-text);
+      resize: none;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .json-preview:focus {
+      outline: 2px solid var(--figma-color-text-brand);
+      outline-offset: -1px;
+      border-color: var(--figma-color-text-brand);
+    }
+
+    .status-message {
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      display: none;
+    }
+
+    .status-message.show {
+      display: block;
+    }
+
+    .status-message.success {
+      background: #e8f5e9;
+      color: #2e7d32;
+      border: 1px solid #4caf50;
+    }
+
+    .status-message.error {
+      background: #ffebee;
+      color: #c62828;
+      border: 1px solid var(--figma-color-bg-danger);
+    }
+
+    .status-message.info {
+      background: #e3f2fd;
+      color: #1565c0;
+      border: 1px solid var(--figma-color-text-brand);
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--figma-color-text-secondary);
+      flex: 1;
+    }
+
+    .empty-state-icon {
+      font-size: 32px;
+      margin-bottom: 12px;
+      opacity: 0.5;
+    }
+
+    .empty-state-text {
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .loading {
+      display: none;
+      padding: 8px;
+      text-align: center;
+      color: var(--figma-color-text-secondary);
+      font-size: 11px;
+    }
+
+    .loading.show {
+      display: block;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--figma-color-border);
+      border-top-color: var(--figma-color-text-brand);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .stats {
+      display: flex;
+      gap: 16px;
+      padding: 8px 0;
+      font-size: 10px;
+      color: var(--figma-color-text-secondary);
+    }
+
+    .stat-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">Component Data Extractor</div>
+      <div class="subtitle">Extract component properties, styles, and assets</div>
+    </div>
+
+    <div class="button-group">
+      <button id="extractBtn" class="button button-primary">Extract Data</button>
+      <button id="copyBtn" class="button" disabled>Copy JSON</button>
+      <button id="sendBtn" class="button button-success" disabled>Send to Local Server</button>
+    </div>
+
+    <div id="loading" class="loading">
+      <span class="spinner"></span>
+      <span id="loadingText">Extracting data...</span>
+    </div>
+
+    <div id="statusMessage" class="status-message"></div>
+
+    <div id="stats" class="stats" style="display: none;">
+      <div class="stat-item">
+        <span>Components:</span>
+        <span id="componentCount">0</span>
+      </div>
+      <div class="stat-item">
+        <span>Size:</span>
+        <span id="dataSize">0 KB</span>
+      </div>
+    </div>
+
+    <div class="json-container">
+      <div class="json-label">Extracted Data (JSON)</div>
+      <textarea 
+        id="jsonPreview" 
+        class="json-preview" 
+        readonly
+        placeholder="Select a component in Figma and click 'Extract Data' to see the JSON output here..."
+      ></textarea>
+    </div>
+
+    <div id="emptyState" class="empty-state">
+      <div class="empty-state-icon">📦</div>
+      <div class="empty-state-text">
+        <div style="font-weight: 500; margin-bottom: 4px;">No data extracted yet</div>
+        <div>Select a component in Figma and click "Extract Data" to begin</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const EXTRACT_BTN_ID = 'extractBtn';
+    const COPY_BTN_ID = 'copyBtn';
+    const SEND_BTN_ID = 'sendBtn';
+    const JSON_PREVIEW_ID = 'jsonPreview';
+    const STATUS_MESSAGE_ID = 'statusMessage';
+    const LOADING_ID = 'loading';
+    const EMPTY_STATE_ID = 'emptyState';
+    const STATS_ID = 'stats';
+    const COMPONENT_COUNT_ID = 'componentCount';
+    const DATA_SIZE_ID = 'dataSize';
+    const LOADING_TEXT_ID = 'loadingText';
+
+    let extractedData = null;
+
+    const extractBtn = document.getElementById(EXTRACT_BTN_ID);
+    const copyBtn = document.getElementById(COPY_BTN_ID);
+    const sendBtn = document.getElementById(SEND_BTN_ID);
+    const jsonPreview = document.getElementById(JSON_PREVIEW_ID);
+    const statusMessage = document.getElementById(STATUS_MESSAGE_ID);
+    const loading = document.getElementById(LOADING_ID);
+    const emptyState = document.getElementById(EMPTY_STATE_ID);
+    const stats = document.getElementById(STATS_ID);
+
+    function showLoading(text) {
+      document.getElementById(LOADING_TEXT_ID).textContent = text;
+      loading.classList.add('show');
+    }
+
+    function hideLoading() {
+      loading.classList.remove('show');
+    }
+
+    function showStatus(message, type) {
+      statusMessage.textContent = message;
+      statusMessage.className = `status-message show ${type}`;
+      setTimeout(() => {
+        statusMessage.classList.remove('show');
+      }, 5000);
+    }
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    }
+
+    function updateStats(data) {
+      const jsonString = JSON.stringify(data);
+      const sizeInBytes = new Blob([jsonString]).size;
+      
+      document.getElementById(COMPONENT_COUNT_ID).textContent = Array.isArray(data) ? data.length : 1;
+      document.getElementById(DATA_SIZE_ID).textContent = formatBytes(sizeInBytes);
+      stats.style.display = 'flex';
+    }
+
+    function displayData(data) {
+      extractedData = data;
+      const jsonString = JSON.stringify(data, null, 2);
+      jsonPreview.value = jsonString;
+      jsonPreview.style.display = 'block';
+      emptyState.style.display = 'none';
+      copyBtn.disabled = false;
+      sendBtn.disabled = false;
+      updateStats(data);
+    }
+
+    function handleExtract() {
+      showLoading('Extracting component data...');
+      parent.postMessage({ pluginMessage: { type: 'extract-data' } }, '*');
+    }
+
+    async function handleCopy() {
+      if (!extractedData) return;
+      
+      try {
+        const jsonString = JSON.stringify(extractedData, null, 2);
+        await navigator.clipboard.writeText(jsonString);
+        showStatus('JSON copied to clipboard!', 'success');
+      } catch (error) {
+        showStatus('Failed to copy: ' + error.message, 'error');
+      }
+    }
+
+    function handleSend() {
+      if (!extractedData) return;
+      
+      showLoading('Sending to local server...');
+      parent.postMessage({
+        pluginMessage: {
+          type: 'send-to-server',
+          data: extractedData
+        }
+      }, '*');
+    }
+
+    extractBtn.addEventListener('click', handleExtract);
+    copyBtn.addEventListener('click', handleCopy);
+    sendBtn.addEventListener('click', handleSend);
+
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      
+      hideLoading();
+      
+      if (msg.type === 'data-extracted') {
+        displayData(msg.data);
+        showStatus('Data extracted successfully!', 'success');
+      } else if (msg.type === 'error') {
+        showStatus('Error: ' + msg.message, 'error');
+        emptyState.style.display = 'flex';
+        jsonPreview.style.display = 'none';
+      } else if (msg.type === 'no-selection') {
+        showStatus('Please select a component in Figma', 'info');
+        emptyState.style.display = 'flex';
+        jsonPreview.style.display = 'none';
+      } else if (msg.type === 'server-response') {
+        if (msg.success) {
+          showStatus('✓ ' + msg.message, 'success');
+        } else {
+          showStatus('✗ ' + msg.message, 'error');
+        }
+      }
+    };
+  </script>
+</body>
+</html>
+

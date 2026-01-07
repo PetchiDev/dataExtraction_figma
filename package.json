@@ -1,0 +1,24 @@
+{
+  "name": "figma-component-extractor",
+  "version": "1.0.0",
+  "description": "Figma plugin to extract component data and generate React components",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "server": "node server/index.js"
+  },
+  "keywords": [
+    "figma",
+    "plugin",
+    "react",
+    "component-extractor"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {}
+}
+

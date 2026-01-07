@@ -162,7 +162,7 @@ function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
       position: isRoot ? 'relative' : 'absolute',
       opacity: node.opacity !== undefined ? node.opacity : 1,
       display: node.visible !== false ? 'block' : 'none',
-      ...(hasSVG && shouldUseSVG ? {} : getBackgroundStyle(node.fills)), // Skip background if using SVG
+      ...((hasSVG && shouldUseSVG) || isTextNode ? {} : getBackgroundStyle(node.fills)), // Skip background if using SVG or if it's a Text node (fills = text color)
       ...getBorderStyle(node.strokes, node),
       ...getEffectStyles(node.effects)
     };

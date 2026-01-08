@@ -1,11 +1,13 @@
 {
   "name": "Component Data Extractor",
-  "id": "component-data-extractor",
+  "id": "1590701605876836081",
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
-  "editorType": ["figma"],
-"capabilities": [],
+  "editorType": [
+    "figma"
+  ],
+  "capabilities": [],
   "enableProposedApi": false,
   "documentAccess": "dynamic-page",
   "networkAccess": {
@@ -14,6 +16,7 @@
     ],
     "reasoning": "Generate code from Figma components"
   },
-  "permissions": ["currentuser"]
+  "permissions": [
+    "currentuser"
+  ]
 }
-

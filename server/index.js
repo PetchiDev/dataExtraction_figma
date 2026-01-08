@@ -112,6 +112,36 @@ function getEffectStyles(effects) {
   return {};
 }
 
+// Utility: Detect semantic component type based on name and properties
+function detectComponentType(node) {
+  const name = node.name.toLowerCase();
+
+  // Button detection
+  if (
+    (name.includes('button') || name.includes('btn')) &&
+    (node.type === 'FRAME' || node.type === 'INSTANCE' || node.type === 'GROUP' || node.type === 'COMPONENT')
+  ) {
+    return 'Button';
+  }
+
+  // Input detection
+  if (name.includes('input') || name.includes('field') || name.includes('search')) {
+    return 'TextField';
+  }
+
+  // Checkbox detection
+  if (name.includes('checkbox') || name.includes('tick')) {
+    return 'Checkbox';
+  }
+
+  // Typography detection
+  if (node.type === 'TEXT') {
+    return 'Typography';
+  }
+
+  return null;
+}
+
 // Generate React component from Figma data
 function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
   const components = Array.isArray(data) ? data : [data];
@@ -131,51 +161,36 @@ function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
     let relativeY = 0;
 
     if (isRoot) {
-      // Root component: if it has negative coordinates, adjust to start from 0,0
-      // Store the offset to adjust children
       relativeX = 0;
       relativeY = 0;
     } else {
-      // Children: calculate relative to parent
       relativeX = node.x !== undefined ? node.x - parentX : 0;
       relativeY = node.y !== undefined ? node.y - parentY : 0;
     }
 
-    // Check if this node has SVG data provided by the plugin
+    const componentType = detectComponentType(node);
     const isTextNode = node.type === 'TEXT';
-
-    // If the plugin sent 'svg' or 'svgBase64', it means it determined this node should be an image.
-    // If the plugin sent 'svg' or 'svgBase64', it means it determined this node should be an image.
-    // We should trust the plugin's decision (which now handles the "no text" check).
     const hasSVG = !!(node.svg || node.svgBase64);
-
-    // We strictly respect the plugin's output. If it sent SVG, we render SVG.
-    // The only exception is if for some reason a Text node has SVG (unlikely), we might prefer Text.
-    // But generally, hasSVG is the primary signal.
     const shouldUseSVG = hasSVG && !isTextNode;
 
-    // If node has SVG and should use it, don't add backgroundColor
-    // Otherwise, add background styles
+    // Styles generation
     const styles = {
       width: `${node.width}px`,
       height: `${node.height}px`,
       position: isRoot ? 'relative' : 'absolute',
       opacity: node.opacity !== undefined ? node.opacity : 1,
       display: node.visible !== false ? 'block' : 'none',
-      ...((hasSVG && shouldUseSVG) || isTextNode ? {} : getBackgroundStyle(node.fills)), // Skip background if using SVG or if it's a Text node (fills = text color)
+      ...((hasSVG && shouldUseSVG) || isTextNode || componentType === 'Button' ? {} : getBackgroundStyle(node.fills)),
       ...getBorderStyle(node.strokes, node),
       ...getEffectStyles(node.effects)
     };
 
-    // Add positioning for non-root elements
     if (!isRoot) {
       styles.left = `${relativeX}px`;
       styles.top = `${relativeY}px`;
     }
 
-    if (node.cornerRadius) {
-      styles.borderRadius = `${node.cornerRadius}px`;
-    }
+    if (node.cornerRadius) styles.borderRadius = `${node.cornerRadius}px`;
 
     // Handle Auto Layout (Flexbox)
     if (node.layoutMode === 'HORIZONTAL' || node.layoutMode === 'VERTICAL') {
@@ -192,7 +207,7 @@ function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
       delete styles.top;
     }
 
-    // Normalize all style keys to camelCase and filter invalid values
+    // Prepare style string
     const normalizedStyles = {};
     for (const [key, value] of Object.entries(styles)) {
       if (value !== undefined && value !== null && value !== '') {
@@ -201,26 +216,123 @@ function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
       }
     }
 
-    // Convert to string format
     const styleEntries = Object.entries(normalizedStyles);
     const styleString = styleEntries.length > 0
-      ? styleEntries
-        .map(([key, value]) => {
-          // Escape single quotes in values
-          const escapedValue = String(value).replace(/'/g, "\\'");
-          return `${indent}        ${key}: '${escapedValue}'`;
-        })
-        .join(',\n')
+      ? styleEntries.map(([key, value]) => {
+        const escapedValue = String(value).replace(/'/g, "\\'");
+        return `${indent}        ${key}: '${escapedValue}'`;
+      }).join(',\n')
       : '';
 
+    // --- GENERATION LOGIC ---
+
+    // 1. Semantic MUI Components
+    if (componentType === 'Button') {
+      let label = 'Button';
+      // Extract label from children
+      if (node.children) {
+        const textChild = node.children.find(c => c.type === 'TEXT');
+        if (textChild && textChild.textContent) label = textChild.textContent;
+      }
+
+      let bgColorProp = '';
+      if (node.fills && node.fills.length > 0 && node.fills[0].type === 'SOLID') {
+        const c = node.fills[0].color;
+        bgColorProp = `backgroundColor: '${rgbToColor(c, node.fills[0].opacity)}',`;
+      }
+
+      return `${indent}    <Button
+${indent}      variant="contained"
+${indent}      key="${nodeId}"
+${indent}      sx={{
+${indent}        position: 'absolute',
+${indent}        left: '${relativeX}px',
+${indent}        top: '${relativeY}px',
+${indent}        width: '${node.width}px',
+${indent}        height: '${node.height}px',
+${indent}        ${bgColorProp}
+${indent}        borderRadius: '${node.cornerRadius || 4}px',
+${indent}        textTransform: 'none',
+${indent}        zIndex: 10
+${indent}      }}
+${indent}    >
+${indent}      ${label}
+${indent}    </Button>`;
+    }
+
+    if (componentType === 'TextField') {
+      let placeholder = node.name;
+      let fontFamily = '';
+
+      // Find text child for placeholder and font family
+      if (node.children) {
+        const textChild = node.children.find(c => c.type === 'TEXT');
+        if (textChild && textChild.textContent) {
+          placeholder = textChild.textContent;
+          if (textChild.fontFamily) fontFamily = textChild.fontFamily;
+        }
+      }
+
+      // Background color extraction
+      let bgColor = 'white';
+      if (node.fills && node.fills.length > 0 && node.fills[0].type === 'SOLID') {
+        bgColor = rgbToColor(node.fills[0].color, node.fills[0].opacity);
+      }
+
+      // Border Radius extraction
+      const borderRadius = node.cornerRadius ? `${node.cornerRadius}px` : '4px';
+
+      // Border logic: if no strokes, remove default MUI border
+      const hasStroke = node.strokes && node.strokes.length > 0;
+
+      const fontStyle = fontFamily ? `\n${indent}          fontFamily: '${fontFamily.replace(/'/g, '')}',` : '';
+
+      return `${indent}    <TextField
+${indent}      variant="outlined"
+${indent}      key="${nodeId}"
+${indent}      placeholder="${placeholder.replace(/"/g, '&quot;')}"
+${indent}      sx={{
+${indent}        position: 'absolute',
+${indent}        left: '${relativeX}px',
+${indent}        top: '${relativeY}px',
+${indent}        width: '${node.width}px',
+${indent}        height: '${node.height}px',
+${indent}        backgroundColor: '${bgColor}',
+${indent}        borderRadius: '${borderRadius}',
+${indent}        zIndex: 10,
+${indent}        '& .MuiOutlinedInput-root': {
+${indent}          height: '100%',
+${indent}          borderRadius: '${borderRadius}',
+${indent}
+${indent}          ${!hasStroke ? "'& fieldset': { border: 'none' }," : ''}
+${indent}        },
+${indent}        '& .MuiInputBase-input': {${fontStyle}
+${indent}        }
+${indent}      }}
+${indent}    />`;
+    }
+
+    if (componentType === 'Checkbox') {
+      return `${indent}    <Checkbox
+${indent}      defaultChecked
+${indent}      key="${nodeId}"
+${indent}      sx={{
+${indent}        position: 'absolute',
+${indent}        left: '${relativeX}px',
+${indent}        top: '${relativeY}px',
+${indent}        zIndex: 10
+${indent}      }}
+${indent}    />`;
+    }
+
+    // 2. Standard Elements (Text, SVG, Images, Divs)
     let content = '';
     const nodeHasChildren = node.children && node.children.length > 0;
 
-    // Priority order: TEXT > SVG > Image > Background div
     if (node.type === 'TEXT' && node.textContent) {
       const textStyles = {};
       if (node.fontSize) textStyles.fontSize = `${node.fontSize}px`;
-      if (node.fontFamily) textStyles.fontFamily = node.fontFamily.replace(/'/g, ''); // Remove extra quotes
+      if (node.fontFamily) textStyles.fontFamily = node.fontFamily.replace(/'/g, '');
       if (node.fontWeight) textStyles.fontWeight = typeof node.fontWeight === 'number' ? node.fontWeight : 400;
       if (node.textAlign) textStyles.textAlign = node.textAlign.toLowerCase();
 
@@ -229,7 +341,6 @@ function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
         textStyles.color = rgbToColor(fillColor, node.fills[0].opacity);
       }
 
-      // Normalize text style keys
       const normalizedTextStyles = {};
       for (const [key, value] of Object.entries(textStyles)) {
         if (value !== undefined && value !== null && value !== '') {
@@ -240,12 +351,10 @@ function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
 
       const textStyleEntries = Object.entries(normalizedTextStyles);
       const textStyleStr = textStyleEntries.length > 0
-        ? textStyleEntries
-          .map(([key, value]) => {
-            const escapedValue = String(value).replace(/'/g, "\\'");
-            return `${indent}          ${key}: '${escapedValue}'`;
-          })
-          .join(',\n')
+        ? textStyleEntries.map(([key, value]) => {
+          const escapedValue = String(value).replace(/'/g, "\\'");
+          return `${indent}          ${key}: '${escapedValue}'`;
+        }).join(',\n')
         : '';
 
       if (textStyleStr) {
@@ -254,57 +363,40 @@ function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
         content = `\n${indent}        <span>\n${indent}          ${node.textContent.replace(/'/g, "\\'")}\n${indent}        </span>`;
       }
     } else if (hasSVG && shouldUseSVG) {
-      // For VECTOR, ELLIPSE, RECTANGLE nodes - use SVG
+      // SVG Handling
       let svgContent = node.svg || node.svgBase64;
-
-      // If it's a Base64 data URI, decode it
       if (typeof svgContent === 'string' && svgContent.startsWith('data:image/svg+xml;base64,')) {
         try {
           const base64Data = svgContent.replace('data:image/svg+xml;base64,', '');
           svgContent = Buffer.from(base64Data, 'base64').toString('utf-8');
         } catch (e) {
           console.error('Error decoding Base64 SVG:', e);
-          // Keep as data URI if decoding fails - use as img src
           content = `\n${indent}        <img src="${svgContent}" alt="${node.name}" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />`;
           svgContent = null;
         }
       }
 
       if (svgContent && !svgContent.startsWith('data:')) {
-        // Escape for template literal
-        const escapedSvg = svgContent
-          .replace(/\\/g, '\\\\')
-          .replace(/`/g, '\\`')
-          .replace(/\$/g, '\\$')
-          .replace(/\n/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-
+        const escapedSvg = svgContent.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
         content = `\n${indent}        <div
 ${indent}          style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}
 ${indent}          dangerouslySetInnerHTML={{ __html: \`${escapedSvg}\` }}
 ${indent}        />`;
       } else if (svgContent && svgContent.startsWith('data:')) {
-        // Use as img src if still in data URI format
         content = `\n${indent}        <img src="${svgContent}" alt="${node.name}" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />`;
       }
     } else if (node.image) {
       content = `\n${indent}        <img src="${node.image}" alt="${node.name}" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />`;
     }
 
-    // For Auto Layout, children positions are relative to parent (0,0)
-    // For absolute positioning, use parent's x,y as reference
+    // Calculate Children offsets
     let childrenX, childrenY;
-
     if (isRoot) {
-      // Root: if it has negative coords, children need offset adjustment
       const rootX = node.x !== undefined ? node.x : 0;
       const rootY = node.y !== undefined ? node.y : 0;
-      // If root is at (-215, -466), children should be relative to (0, 0) but need +215, +466 offset
       childrenX = node.layoutMode ? 0 : (rootX < 0 ? Math.abs(rootX) : 0);
       childrenY = node.layoutMode ? 0 : (rootY < 0 ? Math.abs(rootY) : 0);
     } else {
-      // Non-root: use parent's actual position (already adjusted)
       childrenX = node.layoutMode ? 0 : (node.x !== undefined ? node.x : parentX);
       childrenY = node.layoutMode ? 0 : (node.y !== undefined ? node.y : parentY);
     }
@@ -316,38 +408,26 @@ ${indent}        />`;
     const Tag = node.type === 'TEXT' ? 'span' : 'div';
     const isSelfClosing = !nodeHasChildren && !content;
 
-    // Build the opening tag
     let openingTag = `${indent}    <${Tag}\n${indent}      key="${nodeId}"`;
-
     if (styleString) {
       openingTag += `\n${indent}      style={{\n${styleString}\n${indent}      }}`;
     }
 
-    if (isSelfClosing) {
-      return `${openingTag}\n    />`;
-    }
-
-    // For elements with content or children, ensure proper closing
+    if (isSelfClosing) return `${openingTag}\n    />`;
     return `${openingTag}\n    >\n${content}${childrenContent}${indent}    </${Tag}>`;
   }
 
-  // Generate root component with proper positioning
-  // Handle negative coordinates by normalizing to 0,0 for root
+  // Root Generation
   const mainComponent = components.map((comp) => {
-    // Root component: normalize coordinates (if negative, adjust children)
     const rootX = comp.x !== undefined ? comp.x : 0;
     const rootY = comp.y !== undefined ? comp.y : 0;
-
-    // If root has negative coords, we'll adjust children positions
-    // Root itself will be at 0,0 relative to container
     const childrenOffsetX = rootX < 0 ? Math.abs(rootX) : 0;
     const childrenOffsetY = rootY < 0 ? Math.abs(rootY) : 0;
-
-    // Generate root with depth 0 (so isRoot = true), then children with adjusted offsets
     return generateNodeComponent(comp, 0, childrenOffsetX, childrenOffsetY);
   }).join('\n');
 
   return `import React from 'react';
+import { Button, TextField, Checkbox } from '@mui/material';
 import './${componentName}.css';
 
 const ${componentName} = () => {

@@ -323,6 +323,21 @@ function getCommonStyles(node) {
     return styles;
 }
 
+// Helper to escape text content for JSX
+// Wraps text in JSX expression to safely handle special characters
+// Since we use single quotes in JSX expression {'text'}, we only need to escape single quotes and backslashes
+function escapeJSXText(text) {
+    if (!text) return '';
+    // Convert to string and escape only necessary characters for JSX expression with single quotes
+    return String(text)
+        .replace(/\\/g, '\\\\')  // Escape backslashes first
+        .replace(/'/g, "\\'")     // Escape single quotes (since we use single quotes in JSX)
+        .replace(/\n/g, '\\n')     // Escape newlines
+        .replace(/\r/g, '\\r')    // Escape carriage returns
+        .replace(/\t/g, '\\t');    // Escape tabs
+    // Note: Double quotes don't need escaping when using single quotes in JSX expression
+}
+
 // Helper to convert style object to React style string
 function styleObjectToString(styles) {
     return Object.entries(styles)
@@ -367,12 +382,16 @@ function generateElement(node) {
     // TEXT
     if (node.type === 'TEXT') {
         const styleStr = styleObjectToString(styles);
+        // Escape text content and wrap in JSX expression to safely handle special characters
+        const escapedText = escapeJSXText(node.textContent);
+        // Use JSX expression syntax to safely render text with special characters
+        const textJSX = `{'${escapedText}'}`;
         
         // For rotated text, ensure the text content is properly wrapped
         // This helps maintain alignment after rotation
         if (node.rotation && node.rotation !== 0) {
             // Wrap text in a span to ensure proper alignment
-            return `<div style={{${styleStr}}}><span style={{display: 'inline-block', width: '100%', textAlign: '${styles.textAlign || 'left'}'}}>${node.textContent}</span></div>`;
+            return `<div style={{${styleStr}}}><span style={{display: 'inline-block', width: '100%', textAlign: '${styles.textAlign || 'left'}'}}>${textJSX}</span></div>`;
         }
         
         // For text with flexbox (vertical alignment), wrap content to maintain text-align
@@ -380,10 +399,10 @@ function generateElement(node) {
             // When using flexbox, text-align doesn't work on the container
             // So we wrap the text in a span with proper width and text-align
             const textAlign = styles.textAlign || 'left';
-            return `<div style={{${styleStr}}}><span style={{width: '100%', textAlign: '${textAlign}'}}>${node.textContent}</span></div>`;
+            return `<div style={{${styleStr}}}><span style={{width: '100%', textAlign: '${textAlign}'}}>${textJSX}</span></div>`;
         }
         
-        return `<div style={{${styleStr}}}>${node.textContent}</div>`;
+        return `<div style={{${styleStr}}}>${textJSX}</div>`;
     }
 
     // IMAGE / VECTOR

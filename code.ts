@@ -15,6 +15,12 @@ interface ExtractedData {
   height: number;
   x: number;
   y: number;
+  absoluteBoundingBox?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
   fills: FillData[];
   strokes: StrokeData[];
   effects: EffectData[];
@@ -27,18 +33,24 @@ interface ExtractedData {
   textContent?: string;
   fontSize?: number;
   fontFamily?: string;
+  fontName?: {
+    family: string;
+    style: string;
+  };
   fontWeight?: number;
   letterSpacing?: ExtractedLetterSpacing;
   lineHeight?: ExtractedLineHeight;
   textAlign?: string;
   cornerRadius?: number;
   layoutMode?: string;
+  primaryAxisAlignItems?: string;
+  counterAxisAlignItems?: string;
   paddingLeft?: number;
   paddingRight?: number;
   paddingTop?: number;
   paddingBottom?: number;
   gap?: number;
-  rotation?: number; // Added rotation
+  rotation?: number;
 }
 
 interface FillData {
@@ -274,10 +286,20 @@ function extractTextProperties(node: TextNode): Partial<ExtractedData> {
   // For vertical text alignment, we might need textAlignVertical
   // But Figma API doesn't have textAlignVertical directly, so we use textAlignHorizontal
   
+  // Extract full fontName object
+  let fontName: { family: string; style: string } | undefined = undefined;
+  if (node.fontName !== figma.mixed) {
+    fontName = {
+      family: node.fontName.family,
+      style: typeof node.fontName.style === 'string' ? node.fontName.style : 'Regular'
+    };
+  }
+
   const textData: Partial<ExtractedData> = {
     textContent: node.characters,
     fontSize: node.fontSize !== figma.mixed ? node.fontSize : undefined,
-    fontFamily: node.fontName !== figma.mixed ? node.fontName.family : undefined,
+    fontFamily: node.fontName !== figma.mixed ? node.fontName.family : undefined, // Keep for backward compatibility
+    fontName: fontName, // Full fontName object
     fontWeight: fontWeight,
     letterSpacing: node.letterSpacing !== figma.mixed ? {
       value: typeof node.letterSpacing === 'object' && 'value' in node.letterSpacing ? node.letterSpacing.value : (typeof node.letterSpacing === 'number' ? node.letterSpacing : 0),
@@ -296,6 +318,15 @@ function extractLayoutProperties(node: SceneNode): Partial<ExtractedData> {
 
   if ('layoutMode' in node) {
     layoutData.layoutMode = node.layoutMode;
+  }
+
+  // Extract Auto Layout alignment properties
+  if ('primaryAxisAlignItems' in node) {
+    layoutData.primaryAxisAlignItems = node.primaryAxisAlignItems;
+  }
+
+  if ('counterAxisAlignItems' in node) {
+    layoutData.counterAxisAlignItems = node.counterAxisAlignItems;
   }
 
   if ('paddingLeft' in node) {
@@ -348,6 +379,17 @@ async function extractNodeData(node: SceneNode, parentX: number = 0, parentY: nu
   const nodeX = 'x' in node ? node.x : 0;
   const nodeY = 'y' in node ? node.y : 0;
   
+  // Extract absoluteBoundingBox
+  let absoluteBoundingBox: { x: number; y: number; width: number; height: number } | undefined = undefined;
+  if ('absoluteBoundingBox' in node && node.absoluteBoundingBox) {
+    absoluteBoundingBox = {
+      x: node.absoluteBoundingBox.x,
+      y: node.absoluteBoundingBox.y,
+      width: node.absoluteBoundingBox.width,
+      height: node.absoluteBoundingBox.height
+    };
+  }
+
   const baseData: ExtractedData = {
     name: node.name,
     type: node.type,
@@ -355,6 +397,7 @@ async function extractNodeData(node: SceneNode, parentX: number = 0, parentY: nu
     height: 'height' in node ? node.height : 0,
     x: nodeX, // Keep relative to parent for absolute positioning in CSS
     y: nodeY, // Keep relative to parent for absolute positioning in CSS
+    absoluteBoundingBox: absoluteBoundingBox,
     fills: extractFills(node),
     strokes: extractStrokes(node),
     effects: extractEffects(node),

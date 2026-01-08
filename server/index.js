@@ -2,561 +2,489 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
-const { exec } = require('child_process');
-const { promisify } = require('util');
+const https = require('https');
+const http = require('http');
 
-const execAsync = promisify(exec);
 const app = express();
 const PORT = 3000;
-const PROJECT_DIR = path.join(__dirname, '../react-app');
-const SRC_DIR = path.join(PROJECT_DIR, 'src');
-const COMPONENTS_DIR = path.join(SRC_DIR, 'components');
+const COMPONENT_DIR = path.join(__dirname, '../react-app/src/components');
+const FONTS_DIR = path.join(__dirname, '../react-app/public/fonts');
 
-// Constants
-const REACT_APP_NAME = 'react-app';
-const DEFAULT_COMPONENT_NAME = 'FigmaComponent';
-const TAILWIND_CONFIG = {
-  content: ['./src/**/*.{js,jsx,ts,tsx}'],
-  theme: { extend: {} },
-  plugins: []
-};
-
-// Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// Utility: Check if directory exists
-async function directoryExists(dirPath) {
-  try {
-    await fs.access(dirPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// Utility: Create directory if it doesn't exist
+// Ensure component directory exists
 async function ensureDirectory(dirPath) {
-  if (!(await directoryExists(dirPath))) {
-    await fs.mkdir(dirPath, { recursive: true });
-  }
-}
-
-// Helper function to convert kebab-case to camelCase
-function toCamelCase(str) {
-  return str.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
-}
-
-// Utility: Convert RGB to Tailwind color or hex
-function rgbToColor(rgb, opacity = 1) {
-  if (!rgb) return 'transparent';
-  const r = Math.round(rgb.r * 255);
-  const g = Math.round(rgb.g * 255);
-  const b = Math.round(rgb.b * 255);
-  const a = opacity !== undefined ? opacity : 1;
-
-  if (a < 1) {
-    return `rgba(${r}, ${g}, ${b}, ${a})`;
-  }
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-// Utility: Convert Figma fills to CSS background
-function getBackgroundStyle(fills) {
-  if (!fills || fills.length === 0) return {};
-
-  const fill = fills[0];
-  if (fill.type === 'SOLID' && fill.color) {
-    return {
-      backgroundColor: rgbToColor(fill.color, fill.opacity)
-    };
-  }
-
-  return {};
-}
-
-// Utility: Convert strokes to CSS border
-function getBorderStyle(strokes, node) {
-  if (!strokes || strokes.length === 0) return {};
-
-  const stroke = strokes[0];
-  if (stroke.type === 'SOLID' && stroke.color) {
-    return {
-      borderWidth: `${stroke.weight || 1}px`,
-      borderStyle: 'solid',
-      borderColor: rgbToColor(stroke.color, stroke.opacity)
-    };
-  }
-
-  return {};
-}
-
-// Utility: Convert effects to CSS
-function getEffectStyles(effects) {
-  if (!effects || effects.length === 0) return {};
-
-  const shadows = effects
-    .filter(e => e.type === 'DROP_SHADOW' && e.visible)
-    .map(e => {
-      const offsetX = e.offset?.x || 0;
-      const offsetY = e.offset?.y || 0;
-      const blur = e.radius || 0;
-      const color = e.color ? rgbToColor(e.color, 1) : 'rgba(0, 0, 0, 0.25)';
-      return `${offsetX}px ${offsetY}px ${blur}px ${color}`;
-    });
-
-  if (shadows.length > 0) {
-    return { boxShadow: shadows.join(', ') };
-  }
-
-  return {};
-}
-
-// Utility: Detect semantic component type based on name and properties
-function detectComponentType(node) {
-  const name = node.name.toLowerCase();
-
-  // Button detection
-  if (
-    (name.includes('button') || name.includes('btn')) &&
-    (node.type === 'FRAME' || node.type === 'INSTANCE' || node.type === 'GROUP' || node.type === 'COMPONENT')
-  ) {
-    return 'Button';
-  }
-
-  // Input detection
-  if (name.includes('input') || name.includes('field') || name.includes('search')) {
-    return 'TextField';
-  }
-
-  // Checkbox detection
-  if (name.includes('checkbox') || name.includes('tick')) {
-    return 'Checkbox';
-  }
-
-  // Typography detection
-  if (node.type === 'TEXT') {
-    return 'Typography';
-  }
-
-  return null;
-}
-
-// Generate React component from Figma data
-function generateComponentCode(data, componentName = DEFAULT_COMPONENT_NAME) {
-  const components = Array.isArray(data) ? data : [data];
-  let nodeCounter = 0;
-
-  function generateNodeComponent(node, depth = 0, parentX = 0, parentY = 0) {
-    const indent = '      '.repeat(depth);
-    const nodeId = `node_${nodeCounter++}`;
-
-    // Root container uses relative positioning, children use absolute
-    const isRoot = depth === 0;
-    const hasChildren = node.children && node.children.length > 0;
-
-    // For root, normalize coordinates (handle negative values by making them relative to 0,0)
-    // For children, calculate relative to parent
-    let relativeX = 0;
-    let relativeY = 0;
-
-    if (isRoot) {
-      relativeX = 0;
-      relativeY = 0;
-    } else {
-      relativeX = node.x !== undefined ? node.x - parentX : 0;
-      relativeY = node.y !== undefined ? node.y - parentY : 0;
-    }
-
-    const componentType = detectComponentType(node);
-    const isTextNode = node.type === 'TEXT';
-    const hasSVG = !!(node.svg || node.svgBase64);
-    const shouldUseSVG = hasSVG && !isTextNode;
-
-    // Styles generation
-    const styles = {
-      width: `${node.width}px`,
-      height: `${node.height}px`,
-      position: isRoot ? 'relative' : 'absolute',
-      opacity: node.opacity !== undefined ? node.opacity : 1,
-      display: node.visible !== false ? 'block' : 'none',
-      ...((hasSVG && shouldUseSVG) || isTextNode || componentType === 'Button' ? {} : getBackgroundStyle(node.fills)),
-      ...getBorderStyle(node.strokes, node),
-      ...getEffectStyles(node.effects)
-    };
-
-    if (!isRoot) {
-      styles.left = `${relativeX}px`;
-      styles.top = `${relativeY}px`;
-    }
-
-    if (node.cornerRadius) styles.borderRadius = `${node.cornerRadius}px`;
-
-    // Handle Auto Layout (Flexbox)
-    if (node.layoutMode === 'HORIZONTAL' || node.layoutMode === 'VERTICAL') {
-      styles.display = 'flex';
-      styles.position = 'relative'; // Auto Layout uses relative positioning
-      styles.flexDirection = node.layoutMode === 'HORIZONTAL' ? 'row' : 'column';
-      if (node.gap) styles.gap = `${node.gap}px`;
-      if (node.paddingLeft) styles.paddingLeft = `${node.paddingLeft}px`;
-      if (node.paddingRight) styles.paddingRight = `${node.paddingRight}px`;
-      if (node.paddingTop) styles.paddingTop = `${node.paddingTop}px`;
-      if (node.paddingBottom) styles.paddingBottom = `${node.paddingBottom}px`;
-      // Remove absolute positioning for Auto Layout children
-      delete styles.left;
-      delete styles.top;
-    }
-
-    // Prepare style string
-    const normalizedStyles = {};
-    for (const [key, value] of Object.entries(styles)) {
-      if (value !== undefined && value !== null && value !== '') {
-        const camelKey = toCamelCase(key);
-        normalizedStyles[camelKey] = value;
-      }
-    }
-
-    const styleEntries = Object.entries(normalizedStyles);
-    const styleString = styleEntries.length > 0
-      ? styleEntries.map(([key, value]) => {
-        const escapedValue = String(value).replace(/'/g, "\\'");
-        return `${indent}        ${key}: '${escapedValue}'`;
-      }).join(',\n')
-      : '';
-
-    // --- GENERATION LOGIC ---
-
-    // 1. Semantic MUI Components
-    if (componentType === 'Button') {
-      let label = 'Button';
-      // Extract label from children
-      if (node.children) {
-        const textChild = node.children.find(c => c.type === 'TEXT');
-        if (textChild && textChild.textContent) label = textChild.textContent;
-      }
-
-      let bgColorProp = '';
-      if (node.fills && node.fills.length > 0 && node.fills[0].type === 'SOLID') {
-        const c = node.fills[0].color;
-        bgColorProp = `backgroundColor: '${rgbToColor(c, node.fills[0].opacity)}',`;
-      }
-
-      return `${indent}    <Button
-${indent}      variant="contained"
-${indent}      key="${nodeId}"
-${indent}      sx={{
-${indent}        position: 'absolute',
-${indent}        left: '${relativeX}px',
-${indent}        top: '${relativeY}px',
-${indent}        width: '${node.width}px',
-${indent}        height: '${node.height}px',
-${indent}        ${bgColorProp}
-${indent}        borderRadius: '${node.cornerRadius || 4}px',
-${indent}        textTransform: 'none',
-${indent}        zIndex: 10
-${indent}      }}
-${indent}    >
-${indent}      ${label}
-${indent}    </Button>`;
-    }
-
-    if (componentType === 'TextField') {
-      let placeholder = node.name;
-      let fontFamily = '';
-
-      // Find text child for placeholder and font family
-      if (node.children) {
-        const textChild = node.children.find(c => c.type === 'TEXT');
-        if (textChild && textChild.textContent) {
-          placeholder = textChild.textContent;
-          if (textChild.fontFamily) fontFamily = textChild.fontFamily;
-        }
-      }
-
-      // Background color extraction
-      let bgColor = 'white';
-      if (node.fills && node.fills.length > 0 && node.fills[0].type === 'SOLID') {
-        bgColor = rgbToColor(node.fills[0].color, node.fills[0].opacity);
-      }
-
-      // Border Radius extraction
-      const borderRadius = node.cornerRadius ? `${node.cornerRadius}px` : '4px';
-
-      // Border logic: if no strokes, remove default MUI border
-      const hasStroke = node.strokes && node.strokes.length > 0;
-
-      const fontStyle = fontFamily ? `\n${indent}          fontFamily: '${fontFamily.replace(/'/g, '')}',` : '';
-
-      return `${indent}    <TextField
-${indent}      variant="outlined"
-${indent}      key="${nodeId}"
-${indent}      placeholder="${placeholder.replace(/"/g, '&quot;')}"
-${indent}      sx={{
-${indent}        position: 'absolute',
-${indent}        left: '${relativeX}px',
-${indent}        top: '${relativeY}px',
-${indent}        width: '${node.width}px',
-${indent}        height: '${node.height}px',
-${indent}        backgroundColor: '${bgColor}',
-${indent}        borderRadius: '${borderRadius}',
-${indent}        zIndex: 10,
-${indent}        '& .MuiOutlinedInput-root': {
-${indent}          height: '100%',
-${indent}          borderRadius: '${borderRadius}',
-${indent}
-${indent}          ${!hasStroke ? "'& fieldset': { border: 'none' }," : ''}
-${indent}        },
-${indent}        '& .MuiInputBase-input': {${fontStyle}
-${indent}        }
-${indent}      }}
-${indent}    />`;
-    }
-
-    if (componentType === 'Checkbox') {
-      return `${indent}    <Checkbox
-${indent}      defaultChecked
-${indent}      key="${nodeId}"
-${indent}      sx={{
-${indent}        position: 'absolute',
-${indent}        left: '${relativeX}px',
-${indent}        top: '${relativeY}px',
-${indent}        zIndex: 10
-${indent}      }}
-${indent}    />`;
-    }
-
-    // 2. Standard Elements (Text, SVG, Images, Divs)
-    let content = '';
-    const nodeHasChildren = node.children && node.children.length > 0;
-
-    if (node.type === 'TEXT' && node.textContent) {
-      const textStyles = {};
-      if (node.fontSize) textStyles.fontSize = `${node.fontSize}px`;
-      if (node.fontFamily) textStyles.fontFamily = node.fontFamily.replace(/'/g, '');
-      if (node.fontWeight) textStyles.fontWeight = typeof node.fontWeight === 'number' ? node.fontWeight : 400;
-      if (node.textAlign) textStyles.textAlign = node.textAlign.toLowerCase();
-
-      const fillColor = node.fills && node.fills[0]?.color;
-      if (fillColor) {
-        textStyles.color = rgbToColor(fillColor, node.fills[0].opacity);
-      }
-
-      const normalizedTextStyles = {};
-      for (const [key, value] of Object.entries(textStyles)) {
-        if (value !== undefined && value !== null && value !== '') {
-          const camelKey = toCamelCase(key);
-          normalizedTextStyles[camelKey] = value;
-        }
-      }
-
-      const textStyleEntries = Object.entries(normalizedTextStyles);
-      const textStyleStr = textStyleEntries.length > 0
-        ? textStyleEntries.map(([key, value]) => {
-          const escapedValue = String(value).replace(/'/g, "\\'");
-          return `${indent}          ${key}: '${escapedValue}'`;
-        }).join(',\n')
-        : '';
-
-      if (textStyleStr) {
-        content = `\n${indent}        <span style={{\n${textStyleStr}\n${indent}        }}>\n${indent}          ${node.textContent.replace(/'/g, "\\'")}\n${indent}        </span>`;
-      } else {
-        content = `\n${indent}        <span>\n${indent}          ${node.textContent.replace(/'/g, "\\'")}\n${indent}        </span>`;
-      }
-    } else if (hasSVG && shouldUseSVG) {
-      // SVG Handling
-      let svgContent = node.svg || node.svgBase64;
-      if (typeof svgContent === 'string' && svgContent.startsWith('data:image/svg+xml;base64,')) {
-        try {
-          const base64Data = svgContent.replace('data:image/svg+xml;base64,', '');
-          svgContent = Buffer.from(base64Data, 'base64').toString('utf-8');
-        } catch (e) {
-          console.error('Error decoding Base64 SVG:', e);
-          content = `\n${indent}        <img src="${svgContent}" alt="${node.name}" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />`;
-          svgContent = null;
-        }
-      }
-
-      if (svgContent && !svgContent.startsWith('data:')) {
-        const escapedSvg = svgContent.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-        content = `\n${indent}        <div
-${indent}          style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}
-${indent}          dangerouslySetInnerHTML={{ __html: \`${escapedSvg}\` }}
-${indent}        />`;
-      } else if (svgContent && svgContent.startsWith('data:')) {
-        content = `\n${indent}        <img src="${svgContent}" alt="${node.name}" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />`;
-      }
-    } else if (node.image) {
-      content = `\n${indent}        <img src="${node.image}" alt="${node.name}" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />`;
-    }
-
-    // Calculate Children offsets
-    let childrenX, childrenY;
-    if (isRoot) {
-      const rootX = node.x !== undefined ? node.x : 0;
-      const rootY = node.y !== undefined ? node.y : 0;
-      childrenX = node.layoutMode ? 0 : (rootX < 0 ? Math.abs(rootX) : 0);
-      childrenY = node.layoutMode ? 0 : (rootY < 0 ? Math.abs(rootY) : 0);
-    } else {
-      childrenX = node.layoutMode ? 0 : (node.x !== undefined ? node.x : parentX);
-      childrenY = node.layoutMode ? 0 : (node.y !== undefined ? node.y : parentY);
-    }
-
-    const childrenContent = nodeHasChildren
-      ? node.children.map((child) => generateNodeComponent(child, depth + 1, childrenX, childrenY)).join('\n')
-      : '';
-
-    const Tag = node.type === 'TEXT' ? 'span' : 'div';
-    const isSelfClosing = !nodeHasChildren && !content;
-
-    let openingTag = `${indent}    <${Tag}\n${indent}      key="${nodeId}"`;
-    if (styleString) {
-      openingTag += `\n${indent}      style={{\n${styleString}\n${indent}      }}`;
-    }
-
-    if (isSelfClosing) return `${openingTag}\n    />`;
-    return `${openingTag}\n    >\n${content}${childrenContent}${indent}    </${Tag}>`;
-  }
-
-  // Root Generation
-  const mainComponent = components.map((comp) => {
-    const rootX = comp.x !== undefined ? comp.x : 0;
-    const rootY = comp.y !== undefined ? comp.y : 0;
-    const childrenOffsetX = rootX < 0 ? Math.abs(rootX) : 0;
-    const childrenOffsetY = rootY < 0 ? Math.abs(rootY) : 0;
-    return generateNodeComponent(comp, 0, childrenOffsetX, childrenOffsetY);
-  }).join('\n');
-
-  return `import React from 'react';
-import { Button, TextField, Checkbox } from '@mui/material';
-import './${componentName}.css';
-
-const ${componentName} = () => {
-  return (
-    <div className="${componentName.toLowerCase()}-container">
-${mainComponent}
-    </div>
-  );
-};
-
-export default ${componentName};
-`;
-}
-
-// Generate CSS file
-function generateCSS(componentName = DEFAULT_COMPONENT_NAME) {
-  return `.${componentName.toLowerCase()}-container {
-  position: relative;
-  width: 100%;
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f5f5f5;
-  overflow: auto;
-  padding: 20px;
-  box-sizing: border-box;
-}
-`;
-}
-
-// Create React app if it doesn't exist
-async function createReactApp() {
-  if (await directoryExists(PROJECT_DIR)) {
-    console.log('React app already exists');
-    return;
-  }
-
-  console.log('Creating React app...');
-  try {
-    await execAsync(`npx create-react-app ${REACT_APP_NAME}`, {
-      cwd: path.join(__dirname, '..')
-    });
-
-    console.log('Installing Tailwind CSS...');
-    await execAsync('npm install -D tailwindcss postcss autoprefixer', {
-      cwd: PROJECT_DIR
-    });
-
-    // Create Tailwind config file manually (more reliable than npx command)
-    const tailwindConfigPath = path.join(PROJECT_DIR, 'tailwind.config.js');
-    await fs.writeFile(tailwindConfigPath, `module.exports = ${JSON.stringify(TAILWIND_CONFIG, null, 2)};`);
-
-    // Create PostCSS config file manually
-    const postcssConfigPath = path.join(PROJECT_DIR, 'postcss.config.js');
-    await fs.writeFile(postcssConfigPath, `module.exports = {
-  plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
-  },
-};
-`);
-
-    // Update index.css with Tailwind directives
-    const indexCSSPath = path.join(SRC_DIR, 'index.css');
-    await fs.writeFile(indexCSSPath, `@tailwind base;
-@tailwind components;
-@tailwind utilities;
-`);
-
-    // Update index.html to allow inline styles (CSP)
-    const publicDir = path.join(PROJECT_DIR, 'public');
-    const indexHtmlPath = path.join(publicDir, 'index.html');
     try {
-      let indexHtml = await fs.readFile(indexHtmlPath, 'utf-8');
-
-      // Check if CSP meta tag already exists
-      if (!indexHtml.includes('Content-Security-Policy')) {
-        // Add CSP meta tag after viewport meta tag
-        indexHtml = indexHtml.replace(
-          /<meta name="viewport"[^>]*>/,
-          `$&\n    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline' 'unsafe-eval'; script-src * 'unsafe-inline' 'unsafe-eval'; connect-src *; img-src * data: blob:; font-src * data:;"
-    />`
-        );
-        await fs.writeFile(indexHtmlPath, indexHtml);
-        console.log('Updated index.html with CSP policy');
-      }
-    } catch (error) {
-      console.error('Error updating index.html:', error);
+        await fs.access(dirPath);
+    } catch {
+        await fs.mkdir(dirPath, { recursive: true });
     }
-
-    console.log('React app created successfully');
-  } catch (error) {
-    console.error('Error creating React app:', error);
-    throw error;
-  }
 }
 
-// Main endpoint
-app.post('/generate-component', async (req, res) => {
-  try {
-    const { data } = req.body;
+// Extract unique fonts from Figma data
+function extractFontsFromData(data) {
+    const fonts = new Set();
 
-    if (!data) {
-      return res.status(400).json({ error: 'No data provided' });
+    function traverse(node) {
+        if (node.fontFamily) {
+            // Clean font name - remove quotes and get base font name
+            const cleanFont = String(node.fontFamily)
+                .replace(/^['"]+|['"]+$/g, '')
+                .replace(/'/g, '')
+                .replace(/"/g, '')
+                .trim()
+                .split(',')[0] // Get first font (before comma)
+                .trim();
+
+            if (cleanFont && !isSystemFont(cleanFont)) {
+                fonts.add(cleanFont);
+            }
+        }
+
+        if (node.children && Array.isArray(node.children)) {
+            node.children.forEach(traverse);
+        }
     }
 
-    await createReactApp();
-    await ensureDirectory(COMPONENTS_DIR);
+    data.forEach(traverse);
+    return Array.from(fonts);
+}
 
-    const componentName = data[0]?.name?.replace(/[^a-zA-Z0-9]/g, '') || DEFAULT_COMPONENT_NAME;
-    const componentCode = generateComponentCode(data, componentName);
-    const cssCode = generateCSS(componentName);
+// Check if font is a system font (shouldn't download)
+function isSystemFont(fontName) {
+    const systemFonts = [
+        'arial', 'helvetica', 'times', 'courier', 'verdana', 'georgia',
+        'palatino', 'garamond', 'bookman', 'comic sans ms', 'trebuchet ms',
+        'arial black', 'impact', 'system', 'monospace', 'serif', 'sans-serif',
+        'cursive', 'fantasy', '-apple-system', 'blinkmacsystemfont', 'segoe ui',
+        'roboto', 'oxygen', 'ubuntu', 'cantarell', 'fira sans', 'droid sans',
+        'helvetica neue'
+    ];
 
-    const componentPath = path.join(COMPONENTS_DIR, `${componentName}.jsx`);
-    const cssPath = path.join(COMPONENTS_DIR, `${componentName}.css`);
+    return systemFonts.some(sysFont =>
+        fontName.toLowerCase().includes(sysFont.toLowerCase())
+    );
+}
 
-    await fs.writeFile(componentPath, componentCode);
-    await fs.writeFile(cssPath, cssCode);
+// Download font from Google Fonts API
+async function downloadFontFromGoogle(fontName) {
+    try {
+        // Convert font name to Google Fonts API format (replace spaces with +)
+        const apiFontName = fontName.replace(/\s+/g, '+');
 
-    // Update App.js or App.jsx (create-react-app uses .js by default)
-    const appJSPath = path.join(SRC_DIR, 'App.js');
-    const appJSXPath = path.join(SRC_DIR, 'App.jsx');
+        // Get font info from Google Fonts API
+        const apiUrl = `https://fonts.googleapis.com/css2?family=${apiFontName}:wght@400;500;600;700&display=swap`;
 
-    const appCode = `import React from 'react';
+        return new Promise((resolve, reject) => {
+            https.get(apiUrl, (res) => {
+                let cssData = '';
+
+                res.on('data', (chunk) => {
+                    cssData += chunk;
+                });
+
+                res.on('end', () => {
+                    // Extract font URLs from CSS
+                    const fontUrls = [];
+                    const urlRegex = /url\(([^)]+)\)/g;
+                    let match;
+
+                    while ((match = urlRegex.exec(cssData)) !== null) {
+                        const url = match[1].replace(/['"]/g, '');
+                        if (url.startsWith('http')) {
+                            fontUrls.push(url);
+                        }
+                    }
+
+                    if (fontUrls.length > 0) {
+                        resolve({ css: cssData, urls: fontUrls, fontName });
+                    } else {
+                        // Fallback: use Google Fonts CDN link
+                        resolve({
+                            css: `@import url('https://fonts.googleapis.com/css2?family=${apiFontName}:wght@400;500;600;700&display=swap');`,
+                            urls: [],
+                            fontName
+                        });
+                    }
+                });
+            }).on('error', (err) => {
+                // Fallback to CDN import if download fails
+                const apiFontName = fontName.replace(/\s+/g, '+');
+                resolve({
+                    css: `@import url('https://fonts.googleapis.com/css2?family=${apiFontName}:wght@400;500;600;700&display=swap');`,
+                    urls: [],
+                    fontName
+                });
+            });
+        });
+    } catch (error) {
+        // Fallback to CDN import
+        const apiFontName = fontName.replace(/\s+/g, '+');
+        return {
+            css: `@import url('https://fonts.googleapis.com/css2?family=${apiFontName}:wght@400;500;600;700&display=swap');`,
+            urls: [],
+            fontName
+        };
+    }
+}
+
+// Generate @font-face CSS for all fonts
+async function generateFontCSS(fonts) {
+    await ensureDirectory(FONTS_DIR);
+
+    const fontCSSPromises = fonts.map(font => downloadFontFromGoogle(font));
+    const fontResults = await Promise.all(fontCSSPromises);
+
+    // Combine all font CSS
+    const fontCSS = fontResults
+        .map(result => result.css)
+        .join('\n\n');
+
+    return fontCSS;
+}
+
+// Color Utility
+function rgbToColor(rgb, opacity = 1) {
+    if (!rgb) return 'transparent';
+    const r = Math.round(rgb.r * 255);
+    const g = Math.round(rgb.g * 255);
+    const b = Math.round(rgb.b * 255);
+    return opacity < 1 ? `rgba(${r}, ${g}, ${b}, ${opacity})` : `rgb(${r}, ${g}, ${b})`;
+}
+
+// Common Style Extractor
+function getCommonStyles(node) {
+    const styles = {};
+    styles.position = 'absolute';
+    styles.left = `${node.x}px`;
+    styles.top = `${node.y}px`;
+    styles.width = `${node.width}px`;
+    styles.height = `${node.height}px`;
+
+    // Rotation - Use top-left origin to match Figma's coordinate system
+    // Figma's x/y coordinates represent the top-left corner before rotation
+    if (node.rotation && node.rotation !== 0) {
+        styles.transform = `rotate(${node.rotation}deg)`;
+        // Use top-left origin (0,0) to match Figma's coordinate system exactly
+        styles.transformOrigin = '0 0';
+    }
+
+    // Fills (Background/Text Color)
+    if (node.fills && node.fills.length > 0) {
+        const fill = node.fills[0];
+        if (fill.type === 'SOLID') {
+            const color = rgbToColor(fill.color, fill.opacity);
+            if (node.type === 'TEXT') {
+                styles.color = color;
+            } else if (!node.image && !node.svg && !node.svgBase64) {
+                // Only apply background color if it's NOT an image/svg
+                styles.backgroundColor = color;
+            }
+        }
+    }
+
+    // Border/Strokes
+    if (node.strokes && node.strokes.length > 0) {
+        const stroke = node.strokes[0];
+        if (stroke.type === 'SOLID') {
+            styles.border = `${stroke.weight || 1}px solid ${rgbToColor(stroke.color, stroke.opacity)}`;
+        }
+    }
+
+    // Effects (Shadows)
+    if (node.effects && node.effects.length > 0) {
+        const shadow = node.effects.find(e => e.type === 'DROP_SHADOW' && e.visible);
+        if (shadow) {
+            const color = rgbToColor(shadow.color, 0.5); // approximate opacity if missing
+            styles.boxShadow = `${shadow.offset.x}px ${shadow.offset.y}px ${shadow.radius}px ${color}`;
+        }
+    }
+
+    // Typography
+    if (node.type === 'TEXT') {
+        // Preserve whitespace for text with intentional spacing (like navigation items)
+        // Check if text content has multiple spaces (likely intentional spacing)
+        if (node.textContent && /\s{2,}/.test(node.textContent)) {
+            styles.whiteSpace = 'pre';
+        }
+
+        // Ensure text doesn't wrap for single-line text
+        // If rotated, we might need visible overflow
+        if (node.rotation && node.rotation !== 0) {
+            styles.overflow = 'visible';
+            styles.whiteSpace = 'nowrap';
+        } else {
+            styles.overflow = 'hidden';
+            styles.textOverflow = 'ellipsis';
+        }
+        
+        // For text with height significantly larger than font size, add vertical alignment
+        // This ensures text is properly centered vertically (like "ADD TO CART" button)
+        // But don't apply flexbox to rotated text as it interferes with rotation
+        if (!node.rotation && node.height && node.fontSize && node.height > node.fontSize * 1.5) {
+            styles.display = 'flex';
+            styles.alignItems = 'center'; // Vertically center the text
+            styles.justifyContent = 'flex-start'; // Horizontal alignment based on textAlign
+        }
+
+        // Font Size
+        if (node.fontSize) {
+            styles.fontSize = `${node.fontSize}px`;
+        }
+
+        // Font Weight - convert to number if string, default to 400
+        if (node.fontWeight) {
+            const weight = typeof node.fontWeight === 'string' ? parseFloat(node.fontWeight) || 400 : node.fontWeight;
+            styles.fontWeight = weight;
+        } else {
+            styles.fontWeight = 400; // Default
+        }
+
+        // Font Family - use exact Figma font (primary font only, no fallbacks)
+        if (node.fontFamily) {
+            // Clean fontFamily: remove ALL quotes and get primary font name only
+            // This ensures we use the installed font from Google Fonts
+            const cleanFontFamily = String(node.fontFamily)
+                .replace(/^['"]+|['"]+$/g, '') // Remove leading/trailing quotes
+                .replace(/'/g, '') // Remove all single quotes
+                .replace(/"/g, '') // Remove all double quotes
+                .trim()
+                .split(',')[0] // Get primary font only (before comma)
+                .trim();
+            // Use exact primary font from Figma (installed via Google Fonts)
+            styles.fontFamily = cleanFontFamily;
+        }
+
+        // Text Align - handle both textAlign and textAlignHorizontal
+        const textAlign = node.textAlign || node.textAlignHorizontal;
+        if (textAlign) {
+            const alignValue = textAlign.toLowerCase();
+            styles.textAlign = alignValue;
+            
+            // If using flexbox for vertical alignment, adjust justifyContent for horizontal alignment
+            if (styles.display === 'flex') {
+                if (alignValue === 'center') {
+                    styles.justifyContent = 'center';
+                } else if (alignValue === 'right') {
+                    styles.justifyContent = 'flex-end';
+                } else {
+                    styles.justifyContent = 'flex-start';
+                }
+            }
+        } else {
+            styles.textAlign = 'left';
+            // If using flexbox, set justifyContent to flex-start
+            if (styles.display === 'flex') {
+                styles.justifyContent = 'flex-start';
+            }
+        }
+
+        // Line Height - handle AUTO, PIXELS, PERCENT, and missing values
+        if (node.lineHeight) {
+            if (node.lineHeight.unit === 'AUTO') {
+                // For AUTO, use normal or calculate from fontSize (typically 1.2x)
+                styles.lineHeight = 'normal';
+            } else if (node.lineHeight.unit === 'PIXELS') {
+                styles.lineHeight = `${node.lineHeight.value}px`;
+            } else if (node.lineHeight.unit === 'PERCENT') {
+                styles.lineHeight = `${node.lineHeight.value}%`;
+            } else if (typeof node.lineHeight === 'number') {
+                // If lineHeight is just a number, assume pixels
+                styles.lineHeight = `${node.lineHeight}px`;
+            } else if (node.lineHeight.value !== undefined) {
+                // Fallback for other units
+                styles.lineHeight = node.lineHeight.value;
+            }
+        } else if (node.fontSize) {
+            // If no lineHeight specified, use a reasonable default (1.2x fontSize)
+            styles.lineHeight = `${Math.round(node.fontSize * 1.2)}px`;
+        }
+
+        // Letter Spacing
+        if (node.letterSpacing) {
+            if (node.letterSpacing.unit === 'PIXELS') {
+                styles.letterSpacing = `${node.letterSpacing.value}px`;
+            } else if (node.letterSpacing.unit === 'PERCENT') {
+                styles.letterSpacing = `${node.letterSpacing.value}%`;
+            } else if (typeof node.letterSpacing === 'number') {
+                styles.letterSpacing = `${node.letterSpacing}px`;
+            } else if (node.letterSpacing.value !== undefined && node.letterSpacing.value !== 0) {
+                styles.letterSpacing = `${node.letterSpacing.value}em`;
+            }
+        }
+    }
+
+    // Border Radius
+    if (node.cornerRadius) {
+        styles.borderRadius = `${node.cornerRadius}px`;
+    }
+
+    return styles;
+}
+
+// Helper to convert style object to React style string
+function styleObjectToString(styles) {
+    return Object.entries(styles)
+        .map(([k, v]) => {
+            if (typeof v === 'string') {
+                // For fontFamily, aggressively remove ALL quotes (React handles font names with spaces automatically)
+                if (k === 'fontFamily') {
+                    // Remove all single and double quotes from the entire fontFamily string
+                    // Split by comma, trim each part, remove quotes, then rejoin
+                    const cleaned = v
+                        .split(',')
+                        .map(font => font.trim().replace(/^['"]+|['"]+$/g, ''))
+                        .join(', ');
+                    // Escape any remaining single quotes (shouldn't be any after cleaning)
+                    const escaped = cleaned.replace(/'/g, "\\'");
+                    return `${k}: '${escaped}'`;
+                } else {
+                    // Escape single quotes in the string value
+                    const escaped = v.replace(/'/g, "\\'");
+                    return `${k}: '${escaped}'`;
+                }
+            } else {
+                // For numbers, booleans, etc., don't quote
+                return `${k}: ${v}`;
+            }
+        })
+        .join(', ');
+}
+
+// DOM Generator
+function generateElement(node) {
+    if (!node.visible) return '';
+
+    const styles = getCommonStyles(node);
+
+    // Convert style object to React style string
+    // We need to adjust 'position', 'left', 'top' for children relative to parent?
+    // Actually, Figma 'x' and 'y' are relative to the PARENT in standard extraction, 
+    // unless extracted as absolute.
+    // Assuming the plugin extracts X/Y relative to the parent frame.
+
+    // TEXT
+    if (node.type === 'TEXT') {
+        const styleStr = styleObjectToString(styles);
+        
+        // For rotated text, ensure the text content is properly wrapped
+        // This helps maintain alignment after rotation
+        if (node.rotation && node.rotation !== 0) {
+            // Wrap text in a span to ensure proper alignment
+            return `<div style={{${styleStr}}}><span style={{display: 'inline-block', width: '100%', textAlign: '${styles.textAlign || 'left'}'}}>${node.textContent}</span></div>`;
+        }
+        
+        // For text with flexbox (vertical alignment), wrap content to maintain text-align
+        if (styles.display === 'flex') {
+            // When using flexbox, text-align doesn't work on the container
+            // So we wrap the text in a span with proper width and text-align
+            const textAlign = styles.textAlign || 'left';
+            return `<div style={{${styleStr}}}><span style={{width: '100%', textAlign: '${textAlign}'}}>${node.textContent}</span></div>`;
+        }
+        
+        return `<div style={{${styleStr}}}>${node.textContent}</div>`;
+    }
+
+    // IMAGE / VECTOR
+    if (node.image || node.svg || node.svgBase64) {
+        const styleStr = styleObjectToString(styles);
+        // If we have raw SVG string, use dangerouslySetInnerHTML for better rendering
+        if (node.svg) {
+            // Escape the SVG string for JSX - need to escape quotes and backslashes
+            const escapedSvg = node.svg
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/"/g, '\\"')
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r');
+            return `<div style={{${styleStr}}} dangerouslySetInnerHTML={{__html: '${escapedSvg}'}} />`;
+        } else {
+            // Use img tag for base64 or PNG images
+            const src = node.svgBase64 || node.image;
+            return `<img src="${src}" alt="${node.name}" style={{${styleStr}, objectFit: 'contain'}} />`;
+        }
+    }
+
+    // CONTAINER / FRAME / RECTANGLE
+    const childrenHtml = node.children ? node.children.map(generateElement).join('\n') : '';
+    const styleStr = styleObjectToString(styles);
+
+    return `<div style={{${styleStr}}}>${childrenHtml}</div>`;
+}
+
+// component generator
+function generateComponent(data, name, fontCSS = '') {
+    const root = data[0];
+
+    // Root needs relative positioning to contain absolute children
+    // Root X/Y should be ignored or reset to 0 for the component itself
+    // We wrap everything in a relative container matching the root dimensions.
+
+    // Filter root overrides
+    const rootWidth = root.width;
+    const rootHeight = root.height;
+    const rootBg = (root.fills && root.fills[0] && root.fills[0].type === 'SOLID')
+        ? rgbToColor(root.fills[0].color, root.fills[0].opacity)
+        : 'transparent';
+
+    // Generate children
+    const childrenHtml = root.children.map(generateElement).join('\n');
+
+    return `import React from 'react';
+import './${name}.css';
+
+const ${name} = () => {
+    return (
+        <div style={{
+            position: 'relative',
+            width: '${rootWidth}px',
+            height: '${rootHeight}px',
+            backgroundColor: '${rootBg}',
+            overflow: 'hidden',
+            margin: '0 auto' // Center it
+        }}>
+            ${childrenHtml}
+        </div>
+    );
+};
+
+export default ${name};
+`;
+}
+
+app.post('/api/generate', async (req, res) => {
+    try {
+        const data = req.body;
+        await ensureDirectory(COMPONENT_DIR);
+
+        const componentName = data[0].name.replace(/[^a-zA-Z0-9]/g, '') || 'Frame1';
+
+        // Extract fonts from Figma data
+        const fonts = extractFontsFromData(data);
+        console.log('Extracted fonts:', fonts);
+
+        // Generate font CSS
+        let fontCSS = '';
+        if (fonts.length > 0) {
+            try {
+                fontCSS = await generateFontCSS(fonts);
+                console.log('Generated font CSS for fonts:', fonts);
+            } catch (fontError) {
+                console.error('Error generating font CSS:', fontError);
+                // Continue without fonts if there's an error
+            }
+        }
+
+        const code = generateComponent(data, componentName, fontCSS);
+        const css = fontCSS; // Include font CSS in component CSS file
+
+        await fs.writeFile(path.join(COMPONENT_DIR, `${componentName}.jsx`), code);
+        await fs.writeFile(path.join(COMPONENT_DIR, `${componentName}.css`), css);
+
+        // Update App.js
+        const appjs = `import React from 'react';
 import ${componentName} from './components/${componentName}';
-import './App.css';
 
 function App() {
   return (
@@ -566,37 +494,15 @@ function App() {
   );
 }
 
-export default App;
-`;
+export default App;`;
 
-    // Try to update existing App.js, otherwise create App.jsx
-    if (await directoryExists(appJSPath)) {
-      await fs.writeFile(appJSPath, appCode);
-    } else {
-      await fs.writeFile(appJSXPath, appCode);
+        await fs.writeFile(path.join(__dirname, '../react-app/src/App.js'), appjs);
+
+        res.json({ success: true, fonts: fonts });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
     }
-
-    res.json({
-      success: true,
-      message: `Component ${componentName} generated successfully! Run 'npm start' in the react-app directory.`,
-      componentPath: componentPath
-    });
-  } catch (error) {
-    console.error('Error generating component:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', message: 'MCP Server is running' });
-});
-
-app.listen(PORT, () => {
-  console.log(`MCP Server running on http://localhost:${PORT}`);
-  console.log('Ready to receive Figma component data...');
-});
-
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));

@@ -38,6 +38,7 @@ interface ExtractedData {
   paddingTop?: number;
   paddingBottom?: number;
   gap?: number;
+  rotation?: number; // Added rotation
 }
 
 interface FillData {
@@ -202,22 +203,88 @@ function extractEffects(node: SceneNode): EffectData[] {
   });
 }
 
+// Convert Figma font style name to CSS font-weight number
+function convertFontWeight(style: string): number {
+  if (!style) return 400;
+  
+  const styleLower = style.toLowerCase();
+  
+  // Try to parse as number first (e.g., "400", "700")
+  const numeric = parseFloat(style);
+  if (!isNaN(numeric)) return numeric;
+  
+  // Map common font style names to font-weight values
+  if (styleLower.includes('thin') || styleLower.includes('100')) return 100;
+  if (styleLower.includes('extralight') || styleLower.includes('ultralight') || styleLower.includes('200')) return 200;
+  if (styleLower.includes('light') || styleLower.includes('300')) return 300;
+  if (styleLower.includes('regular') || styleLower.includes('normal') || styleLower.includes('400')) return 400;
+  if (styleLower.includes('medium') || styleLower.includes('500')) return 500;
+  if (styleLower.includes('semibold') || styleLower.includes('demi') || styleLower.includes('600')) return 600;
+  if (styleLower.includes('bold') || styleLower.includes('700')) return 700;
+  if (styleLower.includes('extrabold') || styleLower.includes('ultrabold') || styleLower.includes('800')) return 800;
+  if (styleLower.includes('black') || styleLower.includes('heavy') || styleLower.includes('900')) return 900;
+  
+  // Default to 400 if unknown
+  return 400;
+}
+
 // Extract text properties
 function extractTextProperties(node: TextNode): Partial<ExtractedData> {
+  // Extract font weight from fontName.style
+  let fontWeight: number | undefined = undefined;
+  if (node.fontName !== figma.mixed) {
+    if (typeof node.fontName.style === 'string') {
+      fontWeight = convertFontWeight(node.fontName.style);
+    } else {
+      fontWeight = 400; // Default
+    }
+  }
+  
+  // Extract line height - handle AUTO case
+  let lineHeight: ExtractedLineHeight | undefined = undefined;
+  if (node.lineHeight !== figma.mixed) {
+    if (typeof node.lineHeight === 'object') {
+      // Check if it's AUTO
+      if ('unit' in node.lineHeight && node.lineHeight.unit === 'AUTO') {
+        lineHeight = {
+          value: 0, // Will be calculated on server side
+          unit: 'AUTO'
+        };
+      } else if ('value' in node.lineHeight) {
+        lineHeight = {
+          value: node.lineHeight.value,
+          unit: 'unit' in node.lineHeight ? node.lineHeight.unit : 'PIXELS'
+        };
+      }
+    } else if (typeof node.lineHeight === 'number') {
+      lineHeight = {
+        value: node.lineHeight,
+        unit: 'PIXELS'
+      };
+    }
+  }
+  
+  // Extract text alignment - handle both horizontal and vertical
+  let textAlign: string | undefined = undefined;
+  // textAlignHorizontal is a property of TextNode
+  const textAlignValue = (node as any).textAlignHorizontal;
+  if (textAlignValue && textAlignValue !== figma.mixed) {
+    textAlign = textAlignValue as string;
+  }
+  // For vertical text alignment, we might need textAlignVertical
+  // But Figma API doesn't have textAlignVertical directly, so we use textAlignHorizontal
+  
   const textData: Partial<ExtractedData> = {
     textContent: node.characters,
     fontSize: node.fontSize !== figma.mixed ? node.fontSize : undefined,
     fontFamily: node.fontName !== figma.mixed ? node.fontName.family : undefined,
-    fontWeight: node.fontName !== figma.mixed ? (typeof node.fontName.style === 'string' ? parseFloat(node.fontName.style) || 400 : 400) : undefined,
+    fontWeight: fontWeight,
     letterSpacing: node.letterSpacing !== figma.mixed ? {
       value: typeof node.letterSpacing === 'object' && 'value' in node.letterSpacing ? node.letterSpacing.value : (typeof node.letterSpacing === 'number' ? node.letterSpacing : 0),
       unit: typeof node.letterSpacing === 'object' && 'unit' in node.letterSpacing ? node.letterSpacing.unit : 'PIXELS'
     } : undefined,
-    lineHeight: node.lineHeight !== figma.mixed ? {
-      value: typeof node.lineHeight === 'object' && 'value' in node.lineHeight ? node.lineHeight.value : (typeof node.lineHeight === 'number' ? node.lineHeight : 0),
-      unit: typeof node.lineHeight === 'object' && 'unit' in node.lineHeight ? node.lineHeight.unit : 'PIXELS'
-    } : undefined,
-    textAlign: node.textAlignHorizontal
+    lineHeight: lineHeight,
+    textAlign: textAlign
   };
 
   return textData;
@@ -248,6 +315,16 @@ function extractLayoutProperties(node: SceneNode): Partial<ExtractedData> {
     }
   }
 
+  // Extract rotation
+  if ('rotation' in node) {
+    // Figma returns rotation in degrees
+    layoutData.rotation = node.rotation;
+  } else if ('relativeTransform' in node) {
+    // Calculate rotation from transform matrix if available and not explicitly rotated (though SceneNode usually has rotation)
+    // node.relativeTransform is [[a, b, tx], [c, d, ty]]
+    // angle = atan2(b, a) or atan2(-c, d)
+    // This is a backup, usually node.rotation is sufficient for top-level properties
+  }
 
   return layoutData;
 }
@@ -266,20 +343,27 @@ function hasTextDescendant(node: SceneNode): boolean {
 }
 
 // Main extraction function
-async function extractNodeData(node: SceneNode): Promise<ExtractedData> {
+async function extractNodeData(node: SceneNode, parentX: number = 0, parentY: number = 0): Promise<ExtractedData> {
+  // Extract absolute position - Figma's x/y are relative to parent, so we track parent offset
+  const nodeX = 'x' in node ? node.x : 0;
+  const nodeY = 'y' in node ? node.y : 0;
+  
   const baseData: ExtractedData = {
     name: node.name,
     type: node.type,
     width: 'width' in node ? node.width : 0,
     height: 'height' in node ? node.height : 0,
-    x: 'x' in node ? node.x : 0,
-    y: 'y' in node ? node.y : 0,
+    x: nodeX, // Keep relative to parent for absolute positioning in CSS
+    y: nodeY, // Keep relative to parent for absolute positioning in CSS
     fills: extractFills(node),
     strokes: extractStrokes(node),
     effects: extractEffects(node),
     opacity: 'opacity' in node ? node.opacity : 1,
     visible: node.visible
   };
+
+  // Extract layout and rotation properties
+  Object.assign(baseData, extractLayoutProperties(node));
 
   // Extract text properties if text node
   if (node.type === 'TEXT') {
@@ -354,8 +438,9 @@ async function extractNodeData(node: SceneNode): Promise<ExtractedData> {
   // Extract children recursively - ONLY if we are NOT exporting as a single SVG
   // If we are exporting as SVG, we want to treat this node as a leaf (image) and ignore its internal structure
   if (!shouldExportSVG && 'children' in node && Array.isArray(node.children)) {
+    // Pass current node's position as parent offset for children
     baseData.children = await Promise.all(
-      node.children.map((child: SceneNode) => extractNodeData(child))
+      node.children.map((child: SceneNode) => extractNodeData(child, nodeX, nodeY))
     );
   }
 
@@ -417,12 +502,12 @@ figma.ui.onmessage = async (msg) => {
 
   if (msg.type === 'send-to-server') {
     try {
-      const response = await fetch(`${SERVER_URL}/generate-component`, {
+      const response = await fetch(`${SERVER_URL}/api/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ data: msg.data })
+        body: JSON.stringify(msg.data)
       });
 
       if (!response.ok) {
